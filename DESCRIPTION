@@ -1,0 +1,32 @@
+Package: checkboxr
+Title: Clean and Summarize Select-All-That-Apply Survey Questions
+Version: 0.1.0
+Authors@R:
+    person("Jake", "Harmon", email = "jakebharmon@gmail.com", role = c("aut", "cre"))
+Description: Declares which columns belong to one checkbox
+    (select-all-that-apply) survey question, recodes the question to NA for
+    respondents who gave no usable answer (don't know, prefer not to answer,
+    skipped), and summarizes each question in a 'gtsummary' table with one
+    row per option and the correct denominator.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.1.0)
+Imports:
+    cli,
+    dplyr,
+    rlang (>= 1.1.0),
+    tibble,
+    tidyselect (>= 1.2.0)
+Suggests:
+    cardx,
+    gtsummary (>= 2.1.0),
+    knitr,
+    labelled,
+    rmarkdown,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+VignetteBuilder: knitr
+LazyData: true

@@ -1,0 +1,215 @@
+---
+title: "From raw checkbox data to a finished table"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{From raw checkbox data to a finished table}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+has_gtsummary <- requireNamespace("gtsummary", quietly = TRUE) &&
+  utils::packageVersion("gtsummary") >= "2.1.0"
+has_cardx <- requireNamespace("cardx", quietly = TRUE)
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+A select-all-that-apply question is one question answered once per
+respondent, but survey exports store it as one 0/1 column per option. Treating
+those columns as independent variables, or pivoting them to long rows, gives
+wrong numbers. checkboxr keeps the data wide, sets the whole question to `NA`
+when a respondent gave no usable answer, and summarizes each option as a row
+under one question header.
+
+The pipeline is: **define, check, clean, summarize**.
+
+```{r setup}
+library(checkboxr)
+```
+
+## The data
+
+`cb_example` has eight respondents and one checkbox question, "Transport
+used". Each row exercises one rule.
+
+```{r}
+cb_example
+```
+
+Respondent 4 ticked "don't know", 5 ticked "prefer not to answer", 6 ticked
+nothing, and 7 ticked both "car" and "don't know".
+
+## Two ways to get it wrong
+
+**Zeros that are not real zeros.** Three people use a car. Dividing by all
+eight respondents gives 37.5%, but respondents 4, 5 and 6 told us nothing
+about their transport. Their zeros are missing answers, not "no".
+
+```{r}
+mean(cb_example$q5_car)
+```
+
+**Long data.** Pivoting to one row per tick duplicates respondents. The table
+N becomes the number of ticks, and every other variable is distorted:
+respondents with two ticks count twice and respondents with none disappear.
+
+```{r}
+ticks <- cb_example[c("id", "age", "q5_car", "q5_bus", "q5_bike", "q5_none", "q5_dk", "q5_pna")]
+long <- do.call(rbind, lapply(names(ticks)[-(1:2)], function(col) {
+  ticks[ticks[[col]] == 1, c("id", "age")]
+}))
+nrow(long)            # 10 rows for 8 respondents
+mean(long$age)        # 41.4
+mean(cb_example$age)  # 42.4, the true mean
+```
+
+## Define
+
+A *set* says which columns belong to the question, how to label them, and
+which columns mean "none of the above", "don't know" and "prefer not to
+answer". Every remaining column is a substantive option.
+
+```{r}
+sets <- cb_sets(
+  cb_define(
+    name = "q5", label = "Transport used",
+    cols = starts_with("q5_"),
+    option_labels = c(q5_car = "Car", q5_bus = "Bus", q5_bike = "Bike",
+                      q5_none = "None of the above"),
+    none = q5_none, dk = q5_dk, pna = q5_pna
+  )
+)
+sets
+```
+
+`cols` is tidyselect and is resolved against the data each time the sets are
+used.
+
+The columns do not have to be 0/1. `TRUE`/`FALSE`, `"Yes"`/`"No"`,
+`"Checked"`/`"Unchecked"` and similar codings are recognised on their own.
+For anything else, such as 1 = yes and 2 = no, say so with `checked` and
+`unchecked`. If your export leaves unticked boxes blank, add
+`blank = "unticked"`. See `?cb_define` for the full list.
+
+With many questions, `cb_detect()` drafts the sets from the column names. It is
+a starting point to review, not something to use blindly.
+
+```{r}
+draft <- cb_detect(cb_example, sep = "_")
+```
+
+## Check
+
+`cb_check()` counts how many respondents fall under each rule, without
+changing anything.
+
+```{r}
+cb_check(cb_example, sets)
+```
+
+One "don't know", one "prefer not to answer", one respondent with nothing
+ticked and one conflict. It also stops with an error if a column holds
+anything other than ticked, unticked or `NA`.
+
+## Clean
+
+`cb_clean()` gives each respondent one status per set and sets the
+substantive and "none" columns to `NA` for everyone whose status is not
+`answered`.
+
+```{r}
+cleaned <- cb_clean(cb_example, sets)
+cleaned
+```
+
+The rules, first match wins:
+
+| Pattern in the raw row | Status | Substantive and none columns |
+|---|---|---|
+| Any set column is `NA` | `not_shown` | `NA` |
+| Substantive option ticked with dk, pna or none | see `conflict` | see `conflict` |
+| dk ticked, no substantive option | `dk` | `NA` |
+| pna ticked, no substantive option | `pna` | `NA` |
+| none ticked, no substantive option | `answered` | kept |
+| At least one substantive option ticked | `answered` | kept |
+| Every box unticked | `skipped` (`empty = "na"`) or `answered` (`empty = "zero"`) | `NA` or kept |
+
+Two decisions are yours:
+
+* `empty`: is an all-unticked row a skip (`"na"`, the default) or a real
+  "none of these" (`"zero"`)? A set with a "none of the above" option makes
+  the default safe.
+* `conflict`: when "don't know" is ticked next to a real option, `"keep"`
+  (default) trusts the real option, `"na"` discards the row, and `"error"`
+  stops so you can look at the rows.
+
+```{r}
+mean(cleaned$q5_car, na.rm = TRUE)                                   # 3 of 5
+mean(cb_clean(cb_example, sets, conflict = "na", quiet = TRUE)$q5_car, na.rm = TRUE) # 2 of 4
+mean(cb_clean(cb_example, sets, empty = "zero", quiet = TRUE)$q5_car, na.rm = TRUE)  # 3 of 6
+```
+
+The `q5_dk` and `q5_pna` columns are never changed, and cleaning twice gives
+the same result as cleaning once.
+
+```{r}
+identical(cb_clean(cleaned, sets, quiet = TRUE), cleaned)
+```
+
+## Summarize
+
+`cb_tbl_summary()` passes the wide, cleaned data to
+`gtsummary::tbl_summary()` and groups each set under one header. Sets are
+named in `include` next to ordinary columns.
+
+```{r, eval = has_gtsummary}
+library(gtsummary)
+
+cb_tbl_summary(
+  cleaned, sets,
+  include = c(age, q5),
+  type = age ~ "continuous",
+  statistic = age ~ "{mean} ({sd})",
+  label = age ~ "Age"
+)
+```
+
+The table N is 8, the number of respondents. The option percentages use the
+five respondents who answered the question, which is the `n` in the header.
+Anything in `...` goes to `tbl_summary()`.
+
+`show_status = TRUE` adds the status below the set, with the full sample as
+the denominator, so non-response is reported and not hidden.
+
+```{r, eval = has_gtsummary}
+cb_tbl_summary(cleaned, sets, include = q5, show_status = TRUE)
+```
+
+The result is an ordinary gtsummary table. With `by`, the answered count
+differs by column, so it is dropped from the header.
+
+```{r, eval = has_gtsummary && has_cardx}
+cb_tbl_summary(cleaned, sets, include = c(age, q5), by = group,
+               type = age ~ "continuous") |>
+  add_overall() |>
+  add_p()
+```
+
+`add_p()` tests each option on its own, as if the options were unrelated
+variables. That ignores the dependence between options of one question. For
+a joint test of a multiple-response question, see the MRCV package.
+
+## Helpers
+
+```{r}
+cb_count(cleaned, sets)     # substantive options ticked
+cb_collapse(cleaned, sets)  # ticked labels as text
+```
+
+`cb_long()` gives one row per tick. It exists for plotting only. Never pass
+its output to `tbl_summary()`: that is the long-data mistake from the top of
+this page.
+
+```{r}
+cb_long(cleaned, sets)
+```
